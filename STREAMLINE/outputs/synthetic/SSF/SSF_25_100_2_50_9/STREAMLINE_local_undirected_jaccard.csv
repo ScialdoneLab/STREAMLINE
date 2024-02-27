@@ -1,0 +1,5 @@
+,PageRank,Centrality,Betweenness,Radiality,Clustering Coefficient,Local Efficiency,Node Degrees
+PIDC,0.2,0.2,0.5,0.2,0.2,0.2,0.2
+GRNBOOST2,0.2,0.2,0.5,0.2,0.0,0.2,0.2
+PPCOR,0.2,0.2,0.5,0.2,0.2,0.2,0.2
+SINCERITIES,0.0,0.0,0.2,0.0,0.0,0.0,0.0

@@ -1,0 +1,17 @@
+*.DS_Store
+__pycache__
+*rankedEdges.csv
+STREAMLINE/inputs/
+STREAMLINE/outputs/*/*/*/GRNBOOST2
+STREAMLINE/outputs/*/*/*/ground truth
+STREAMLINE/outputs/*/*/*/PIDC
+STREAMLINE/outputs/*/*/*/PPCOR
+STREAMLINE/outputs/*/*/*/SINCERITIES
+*.xlsx
+*PredictedNetworks.zip
+inputs.zip
+outputs.zip
+*.afdesign
+*README.txt
+Figures/input/corrplot_experimental.svg
+Figures/input/corrplot_synthetic.svg

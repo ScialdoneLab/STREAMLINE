@@ -1,0 +1,620 @@
+---
+title: "STREAMLINE Figures"
+author: "Marco Stock"
+date: "2024-02-18"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+#imports
+library(tidyr)
+library(ggforce)
+library(corrplot)
+library(gridGraphics)
+library(funkyheatmap)
+library(tibble)
+library(magick)
+library(RColorBrewer)
+library(dplyr)
+library(cowplot)
+library(ggpubr)
+```
+
+## Loading the data
+
+```{r message=FALSE, warning=FALSE}
+workingdir = "../STREAMLINE/outputs/" #the "output" folder of BEELINE/STREAMLINE
+
+postproc <- function(data, networks, directed, type){
+  algo_levels = c("GRNBOOST2", "SINCERITIES")
+  if(!directed){algo_levels = c(algo_levels, "PIDC", "PPCOR")}
+  if(type=="raw"){algo_levels = c(algo_levels, "ground truth")}
+  data$Algorithm <- factor(data$Algorithm, levels=algo_levels)
+  if(networks=="experimental"){data$Network <- factor(data$Network, levels=c("yeast", "hESC", "mDC", "mESC"))} 
+  else {data$Network <- factor(data$Network, levels=c("ER", "SF", "SSF", "SW"))}
+  if(("Shortest Path Length") %in% colnames(data)){colnames(data)[colnames(data) == 'Shortest Path Length'] <- 'Avg Shortest Path Length'}
+  return(data)
+}
+STREAMLINE_results <- function(networks = c("synthetic", "experimental"), type, directed, add_dataset=FALSE){
+  read_file <- function(datadir, directed, type=c("mse", "mse_rel", "jaccard", "jaccard_ratio", "correlation", "raw")) {
+    if (directed){ str_directed = "directed" } else {str_directed = "undirected"}
+    if (type %in% c("raw", "mse", "mse_rel")) {str_mode = "global"} else {str_mode = "local"}
+    data = read.csv(paste0(datadir, "/STREAMLINE_", str_mode, "_", str_directed, "_", type, ".csv"), check.names=FALSE)
+    colnames(data)[1] <- "Algorithm"
+    if(add_dataset){data$Dataset <- basename(datadir)}
+    return(data)
+  }
+  merge_datasets <- function(network, networks, directed, type){
+    networks_list = lapply(list.dirs(path = paste0(workingdir, networks, "/", network), recursive = FALSE), read_file, directed=directed, type=type)
+    networks_df <- bind_rows(networks_list)
+    networks_df$Network <- network
+    return(networks_df)
+  }
+  if(networks == "synthetic"){datasets= c("ER", "SF", "SSF", "SW")}
+  else if(networks == "experimental"){datasets = c("yeast", "hESC", "mDC", "mESC")}
+  df_list = lapply(datasets, merge_datasets, networks=networks, directed=directed, type=type)
+  data <- bind_rows(df_list)
+  data <- postproc(data, networks, directed, type)
+  return(data)
+}
+load_performance_data <- function(metric, networks, directed){
+  if (directed){ str_directed = "directed" } else {str_directed = "undirected"}
+  if(networks == "synthetic"){datasets= c("ER", "SF", "SSF", "SW")}
+  else if(networks == "experimental"){datasets = c("yeast", "hESC", "mDC", "mESC")}
+  read_file <- function(dataset, networks, metric, directed) {
+    data <- read.csv(paste0(workingdir, networks, "/", dataset, "/", dataset, "-", metric, "-", directed, ".csv"), row.names="X")
+    raw_wide <- tibble::rownames_to_column(as.data.frame(t(data)), var = "Dataset")
+    raw <- pivot_longer(raw_wide, cols=2:ncol(raw_wide), names_to="Algorithm", values_to = metric,)
+    raw_meta <- cbind(raw, dataset)
+    colnames(raw_meta)[4] <- "Network"
+    return(raw_meta)
+  }
+  df_list = lapply(datasets, read_file, networks=networks, metric=metric, directed=str_directed)
+  data <- bind_rows(df_list)
+  data <- postproc(data, networks, directed, metric)
+  return(data)
+}
+```
+
+## General figure utilities
+
+```{r message=FALSE, warning=FALSE}
+out_dir <- "./output/" #directory to save image outputs
+in_dir <- "./input/" #directory for required external images
+
+algo_palette = c("#37437C", "#9F5E45", "#407346", "#833B38", "grey")
+exp_network_palette = brewer.pal(n = 4, name = "Set1")
+syn_network_palette = brewer.pal(n = 4, name = "Set2")
+
+savepdf <- function(plot, name, w, h){
+  ggsave(paste0(out_dir, name, ".pdf"), plot, device = "pdf", width = w, height = h, units = "in", dpi = 300) }
+
+plot_metric <- function(metric, data, plot, x="Algorithm", ylab=NULL, no_legend=FALSE, palette=NULL){
+  
+  scale_x_network = function(...){scale_x_discrete(limits= sort(unique(data$Network)), ...)}
+  scale_x_algo <- function(...){scale_x_discrete(limits= sort(unique(data$Algorithm)), ...)}
+  
+  if (plot =="sina"){
+    panel <- ggplot(data, aes(x = .data[[x]], y = .data[[metric]], color = Network)) + geom_sina() + theme_pubr() + 
+      scale_colour_manual(values = palette, labels= sort(unique(data$Network))) + theme(legend.text=element_text(size=rel(1.2)), 
+      legend.key.size=unit(1, 'cm'), legend.title=element_text(size=rel(1.2))) + stat_summary(fun.y=median, geom="crossbar", size=.1) +labs(y=metric)
+    if(x=="Algorithm"){panel <- panel + scale_x_algo(guide = guide_axis(angle = 45))}
+    else if(x=="Network") { 
+      panel <- panel + scale_x_network()
+      if(metric=="In Centralization"){panel <- panel + scale_y_log10() + ylab("log10(In Centralization)")}
+    }
+  } 
+  if(plot %in% c("ji", "ji_ratio")){
+    mean_data <- aggregate(. ~ Algorithm + Network, data=data, FUN=mean)
+    se_data <- aggregate(. ~ Algorithm + Network, data=data, FUN=function(x){sd(x)/sqrt(length(x))})
+    data1 <- data.frame("Algorithm"=mean_data$Algorithm, "Network"=mean_data$Network, "Mean"=mean_data[,metric], "Se"=se_data[,metric])
+    
+    panel <- ggplot(data1, aes(x=Network, y=Mean, color = Algorithm)) + scale_color_manual(values=algo_palette) +
+      geom_point( position=position_dodge(0.5))+  theme_pubr() +
+      geom_errorbar(aes(ymin=Mean-Se, ymax=Mean+Se), width=.5,  position=position_dodge(0.5)) +
+      ggtitle(metric) + theme(plot.title = element_text(hjust = 0.5)) +
+      scale_x_network()
+
+    if(plot=="ji_ratio"){
+        panel <- panel + geom_hline(yintercept = 1, color="red", linetype="solid", size=0.7) + labs(y= expression(J / J["rand"]))
+    }
+  }
+  if(plot == "heatmap"){
+    data <- select(data, -Dataset)
+    median_data <- aggregate(. ~ Algorithm + Network, data=data, FUN=function(x) as.numeric(median(x, na.rm = TRUE)))
+    if(metric == "EPr"){median_data[metric] <- median_data[metric]*100}
+    panel <- ggplot(median_data, aes(x = Network, y = Algorithm, fill = .data[[metric]])) + theme_pubr() +
+      geom_tile(color = "white", lwd = .5, linetype = 1) + scale_fill_gradient2(low="white", high="blue") +
+      geom_text(aes(label = round(.data[[metric]], 2)), color = ifelse(median_data[metric] >0.6, "white", "black"), size = 4) + 
+      scale_colour_manual(values=c("white"="white", "black"="black")) +
+      theme(legend.position="right") + coord_fixed() +
+      scale_x_network() + scale_y_discrete(limits= rev(sort(unique(data$Algorithm))))
+    if(metric == "EPr"){panel <- panel + labs(fill= expression(paste("EPr x", 10^{-2})))}
+  }
+  if(plot == "bar"){
+    panel <- ggbarplot(data, x = "Network", y = metric, fill = "Algorithm",
+                      add = "mean_se", palette = algo_palette,
+                      position = position_dodge(0.5)) + ggtitle(metric) + theme(plot.title = element_text(hjust = 0.5)) +
+                      scale_x_network()
+  } 
+  if (plot =="violin"){
+    panel <- ggviolin(data, x = x, y = metric, fill = "Network", 
+                       palette = palette, draw_quantiles = 0.5) +
+                        labs(y=metric)
+    if(x=="Algorithm"){
+      panel <- panel + scale_x_algo(guide = guide_axis(angle = 45)) + geom_vline(xintercept=4.5, linetype="dotted")
+    }
+    else if(x=="Network"){
+      panel <- panel + scale_x_network()
+    }
+  }
+  if (!is.null(ylab)) {panel = panel + labs(y=ylab)}
+  if (no_legend) {panel = panel + theme(legend.position="none")}
+  return(panel)
+}
+
+metric_row <- function(metrics, plot, networks, type, directed,  x="Algorithm", ylab=NULL, ncol=length(metrics), algos=NULL){
+  data = STREAMLINE_results(networks=networks, type=type, directed=directed)
+  if(!is.null(algos)){data = data[data$Algorithm %in% algos, ]}
+  if(networks=="synthetic"){palette=syn_network_palette} else if(networks=="experimental"){palette=exp_network_palette}
+  row_plots <- lapply(metrics, plot_metric, data=data, plot=plot, x=x, ylab=ylab, no_legend=TRUE, palette=palette)
+  row <- plot_grid(plotlist=row_plots, ncol = ncol)
+}
+
+syn_data = STREAMLINE_results(networks="synthetic", type="raw", directed=FALSE)
+syn_network_legend <- get_legend(plot_metric("Assortativity", data=syn_data, plot="violin", palette=syn_network_palette))
+
+exp_data = STREAMLINE_results(networks="experimental", type="raw", directed=FALSE)
+exp_network_legend <- get_legend(plot_metric("Assortativity", data=exp_data, plot="sina", palette=exp_network_palette))
+
+syn_data = STREAMLINE_results(networks="synthetic", type="mse", directed=FALSE)
+undir_algo_legend <- get_legend(plot_metric("Assortativity", data=syn_data, plot="bar"))
+
+syn_data = STREAMLINE_results(networks="synthetic", type="mse", directed=TRUE)
+dir_algo_legend <- get_legend(plot_metric("Assortativity", data=syn_data, plot="bar"))
+```
+
+
+## Figure 2 + 3
+
+```{r fig.height=8, fig.width=10, message=FALSE, warning=FALSE}
+figures2_3 <- function(metrics, name){
+  plot_title <- function(title){ return(ggplot() + ggtitle(title) + theme_void() + theme(plot.title = element_text(hjust = 0.5)))}
+  title_row <- lapply(metrics, plot_title)
+  title_row <- plot_grid(NULL, title_row[[1]], NULL, title_row[[2]], NULL, title_row[[3]], rel_widths=c(.2, 1, 0.3, 1, 0.3, 1), ncol = 6, align="v")
+  
+  pic1 <- image_ggplot(image_read(paste0(in_dir, tolower(metrics[1]), ".svg")))
+  pic2 <- image_ggplot(image_read(paste0(in_dir, tolower(metrics[2]), ".svg")))
+  pic3 <- image_ggplot(image_read(paste0(in_dir, tolower(metrics[3]), ".svg")))
+  row1 <- plot_grid(NULL, pic1, NULL, pic2, NULL, pic3, rel_widths = c(.3, 1, 0.3, 1, 0.3, 1), ncol = 6, align="v")
+  
+  row2 <- metric_row(metrics, plot="bar", networks = "synthetic", type="mse", ylab="MSE", directed=FALSE)
+  row3 <- metric_row(metrics, plot="bar", networks = "experimental", type="mse", ylab="MSE", directed=FALSE)
+  
+  figure <- plot_grid(title_row, row1, NULL, row2, NULL, row3, undir_algo_legend, rel_heights = c(.2, 3, .2, 4, .2, 4, .5), nrow=7, labels=c("A", "", "", "B", "", "C"))
+  print(figure)
+  savepdf(figure, name, w=10, h=8)
+  return(figure)
+}
+
+figure2 <- figures2_3(metrics=c("Global Efficiency", "Local Efficiency", "Avg Shortest Path Length"), name="figure2")
+figure3 <- figures2_3(metrics=c("Assortativity", "Clustering Coefficient", "Centralization"), name="figure3")
+```
+
+## Figure 4
+
+```{r fig.height=6, fig.width=10, message=FALSE, warning=FALSE}
+metrics = c("Betweenness", "Centrality", "Radiality", "PageRank")
+
+row1 <- metric_row(metrics, plot="ji_ratio", networks = "synthetic", type="jaccard_ratio", directed=FALSE)
+row2 <- metric_row(metrics, plot="ji_ratio", networks = "experimental", type="jaccard_ratio", directed=FALSE)
+
+figure4 <- plot_grid(NULL, row1, NULL, row2, undir_algo_legend, rel_heights = c(.5, 3, .5, 3, .5), nrow=5, labels=c("A", "", "B", "", ""))
+figure4
+savepdf(figure4, "figure4", w=10, h=6)
+```
+
+## Figure 5 & S7
+```{r fig.height=10, fig.width=15, message=FALSE, warning=FALSE}
+general_column_infos <- tribble( ~id, ~id_color, ~name, ~geom, ~group, ~options,
+  "rank", "rank", "", "text", "Algorithm", list(hjust = 0),
+  "Algorithm", NA, "", "text", "Algorithm", list(hjust = 0, width = 3),
+  "overall", "rank_overall", "Overall topology score", "bar", "Overall", list(width = 1.5, draw_outline = FALSE, palette="greys"),)
+spacer <- tribble( ~id, ~id_color, ~name, ~geom, ~group, ~options,
+                   "spacer", NA, NA, "text", "Statistical Performance", list(width = 1.5),)
+add_column_info <- function(column, type, color=paste0("rank_", column), name=column, group){
+  palettes = c("Information Exchange"="blues", "Hub Topology"="greens", "Hub Identification"="oranges", "Statistical Performance"="purples")
+  column_info_row <- tribble( ~id, ~id_color, ~name, ~geom, ~group, ~options,
+        column, color, name, type, group, list(width = 1.5, draw_outline = FALSE, palette=palettes[group]),
+        paste0("label_", column), NA, NA, "text", group, list(hjust = .5, overlay = TRUE),)
+}
+column_groups <- tribble(
+  ~group,     ~palette,      ~level1, 
+  "Algorithm", "greys", "Algorithm", 
+  "Overall", "greys", "",
+  "Information Exchange", "blues", "Information Exchange",
+  "Hub Topology", "greens", "Hub topology",
+  "Hub Identification", "oranges", "Hub identification",
+  "Statistical Performance", "purples", "",
+)
+palettes <- tribble(
+  ~palette, ~colours,
+  "greys", colorRampPalette(rev(brewer.pal(9, "Greys")))(101),
+  "blues", colorRampPalette(rev(brewer.pal(9, "Blues")))(101),
+  "greens", colorRampPalette(rev(brewer.pal(9, "Greens")))(101),
+  "oranges", colorRampPalette(rev(brewer.pal(9, "Oranges")))(101),
+  "purples", colorRampPalette(rev(brewer.pal(9, "Purples")))(101),
+  "bin_greys", colorRampPalette(c("white", (brewer.pal(9, "Greys"))[3]))(101),
+   "bin_greens", colorRampPalette(c("white", (brewer.pal(9, "Greens"))[2]))(101),
+   "bin_oranges", colorRampPalette(c("white", (brewer.pal(9, "Oranges"))[2]))(101),
+   "bin_purples", colorRampPalette(c("white", (brewer.pal(9, "Purples"))[3]))(101),
+)
+legends_directed <- list(
+    list(
+      title = "Overall\ntopology rank",
+      palette = "bin_greys",
+      geom = "rect",
+      labels = c("2", "1"),
+      size = c(1, 1)
+    ),
+    list(
+      title = "Hub topology\nrank",
+      palette = "bin_greens",
+      geom = "rect",
+      labels = c("2", "1"),
+      size = c(1, 1)
+    ),
+    list(
+      title = "Hub identification\nrank",
+      palette = "bin_oranges",
+      geom = "rect",
+      labels = c("2", "1"),
+      size = c(1, 1)
+    ),
+    list(
+      title = "Statistical\nperformance rank",
+      palette = "bin_purples",
+      geom = "rect",
+      labels = c("2", "1"),
+      size = c(1, 1)
+    )
+  )
+legends_undirected <- list(
+  list(
+    title = "Overall topology rank",
+    palette = "greys",
+    geom = "rect",
+    labels = c("4", "3 ", "2", "1"),
+    size = c(1, 1, 1, 1)
+  ),
+  list(
+    title = "Information exchange rank",
+    palette = "blues",
+    geom = "rect",
+    labels = c("4", "3 ", "2", "1"),
+    size = c(1, 1, 1, 1)
+  ),
+  list(
+    title = "Hub topology rank",
+    palette = "greens",
+    geom = "rect",
+    labels = c("4", "3 ", "2", "1"),
+    size = c(1, 1, 1, 1)
+  ),
+  list(
+    title = "Hub identification rank",
+    palette = "oranges",
+    geom = "rect",
+    labels = c("4", "3 ", "2", "1"),
+    size = c(1, 1, 1, 1)
+  ),
+  list(
+    title = "Statistical performance rank",
+    palette = "purples",
+    geom = "rect",
+    labels = c("4", "3 ", "2", "1"),
+    size = c(1, 1, 1, 1)
+  )
+)
+row_groups <- tribble(
+  ~group,      ~level1,
+  "synthetic",     "Synthetic networks",
+  "experimental",      "Experimental networks",
+)
+
+preprocess_merged <- function(networks, hub_metrics, ht_metrics, ie_metrics=NULL, directed){
+  max_scale <- function(scores){scores = scores / max(scores)}
+  
+  topology_metrics = c(ht_metrics, ie_metrics)
+  performance_data <- load_performance_data("EPr", networks=networks, directed=directed)
+  topology_data = STREAMLINE_results(networks, type="mse", directed=directed, add_dataset = TRUE)[,c("Algorithm", "Network", topology_metrics)]
+  hub_data = STREAMLINE_results(networks, type="jaccard_ratio", directed=directed, add_dataset = TRUE)[,c("Algorithm", "Network", hub_metrics)]
+  
+  aggregated_means <- lapply(list(performance_data, topology_data, hub_data), function(x) aggregate(. ~ Network + Algorithm, data=x[,!(colnames(x)%in% c("Dataset"))], FUN=mean))
+  aggregated_means[[2]][topology_metrics] <- abs(aggregated_means[[2]][topology_metrics])
+  aggregated_means[[3]][hub_metrics] <- aggregated_means[[3]][hub_metrics] - 1
+  scale_max_per_network <- function(data){
+    metric_cols <- colnames(data)[!(colnames(data) %in% c("Dataset", "Algorithm", "Network"))]
+    for (col in metric_cols){
+      for (network in unique(data$Network)){
+        data[data$Network == network, col] = max_scale(data[data$Network == network, col])
+      }}
+    return(data)
+  }
+  max_scaled_networks <- lapply(aggregated_means, scale_max_per_network)
+  
+  aggregated <- lapply(max_scaled_networks, function(x) aggregate(. ~ Algorithm, data=x[,!(colnames(x)%in% c("Network", "Dataset"))], FUN=mean))
+  aggregated[[3]][hub_metrics] <- pmax(as.matrix(aggregated[[3]][hub_metrics]), 0)
+  merged_dfs <- Reduce(function(...) merge(..., by="Algorithm", all=T), aggregated)
+
+  merged_dfs[,topology_metrics] <- apply(1 - merged_dfs[,topology_metrics], 2, max_scale) #scale 0-1 and make score the larger the better
+  merged_dfs[,hub_metrics] <- apply(merged_dfs[,hub_metrics] , 2, max_scale)
+  
+  if(!directed){
+    merged_dfs$information_exchange <- rowSums(merged_dfs[,ie_metrics])
+    merged_dfs$information_exchange <- max_scale(merged_dfs$information_exchange)
+  }
+  merged_dfs$hub_topology <- rowSums(merged_dfs[,ht_metrics])
+  merged_dfs$hub_topology <- max_scale(merged_dfs$hub_topology)
+  
+  merged_dfs$hub_identification <- rowSums(merged_dfs[,hub_metrics])
+  merged_dfs$hub_identification <- max_scale(merged_dfs$hub_identification)
+  
+  merged_dfs[,"EPr"] <- max_scale(merged_dfs[,"EPr"])
+  
+  tie_max_scale <- function(ranks){
+    if(length(unique(ranks))!=1){max_scale(ranks)}
+    else{rep(1, length(ranks))}
+  }
+    
+  merged_dfs$overall <- rowSums(merged_dfs[,c(hub_metrics, topology_metrics)])
+  merged_dfs$overall <- tie_max_scale(merged_dfs$overall)
+  merged_dfs <- merged_dfs[order(-merged_dfs$overall),]
+  
+  label_rank <- function(scores, ...) {
+    ranks <- rank(-scores, ties.method="min", ...)
+    ifelse(ranks <= 1, as.character(ranks), "")
+  }
+  mark_random <- function(scores, ...){
+    ifelse(scores >=1, "*", "")
+  }
+  
+  label_cols = c(hub_metrics, topology_metrics, "hub_identification", "hub_topology")
+  if(!directed){label_cols <- c(label_cols, "information_exchange")}else{label_cols <- c(label_cols, "overall", "EPr")}
+  rank_cols = c(label_cols, "EPr", "overall")
+  plot_df <- merged_dfs |>
+    mutate(rank = as.character(seq_len(nrow(merged_dfs)))) |>
+    mutate(across(label_cols, label_rank, .names = "label_{col}")) |>
+    mutate(across(rank_cols, rank, .names = "rank_{col}")) |>
+    mutate_at(paste("rank_", rank_cols, sep=""), tie_max_scale) |>
+    as.data.frame()  
+  
+  return(plot_df)
+}
+summary_plot <- function(hub_metrics, ht_metrics, ie_metrics=NULL, directed, name){
+  synthetic_summary_plot <- preprocess_merged(networks="synthetic", hub_metrics, ht_metrics, ie_metrics, directed)
+  experimental_summary_plot <- preprocess_merged(networks="experimental", hub_metrics, ht_metrics, ie_metrics, directed)
+  summary_plot <- rbind(synthetic_summary_plot, experimental_summary_plot)
+  summary_plot <- mutate(summary_plot, id = as.character(seq_len(nrow(summary_plot))))
+  summary_plot$spacer <- ""
+  row_info <- data.frame(id = summary_plot$id, group = c(rep("synthetic", nrow(synthetic_summary_plot)), rep("experimental", nrow(experimental_summary_plot))))
+  
+  ht_summary <- add_column_info("hub_topology", "bar", name="Overall hub topology", group="Hub Topology")
+  ht_column_infos <- bind_rows(ht_summary, lapply(ht_metrics, add_column_info, type="circle", group="Hub Topology"))
+  
+  hi_summary <- add_column_info("hub_identification", "bar", name="Overall hub identification", group="Hub Identification")
+  hub_column_infos <- bind_rows(hi_summary, lapply(hub_metrics, add_column_info, type="circle", group="Hub Identification"))
+    
+  if(directed){
+    legends=legends_directed
+    overall_label <- tribble( ~id, ~id_color, ~name, ~geom, ~group, ~options,
+          "label_overall", NA, NA, "text", "Overall", list(hjust = .5, overlay = TRUE),)
+    epr_column_info <- add_column_info("EPr", "bar", name="Early Precision", group="Statistical Performance")
+    column_info <- bind_rows(general_column_infos, overall_label, ht_column_infos, hub_column_infos, spacer, epr_column_info)
+    palettes[palettes$palette == "greys", "colours"][[1]][[1]] <- colorRampPalette(rev(brewer.pal(9, "Greys")[3:9]))(101)
+    palettes[palettes$palette == "purples", "colours"][[1]][[1]] <- colorRampPalette(rev(brewer.pal(9, "Purples")[3:9]))(101)
+    }
+  else{
+    legends=legends_undirected
+    ie_summary <- add_column_info("information_exchange", "bar", name="Overall information exchange", group="Information Exchange")
+    ie_column_infos <- bind_rows(ie_summary, lapply(ie_metrics, add_column_info, type="circle", group="Information Exchange"))
+    epr_column_info <- tribble( ~id, ~id_color, ~name, ~geom, ~group, ~options,
+          "EPr", "rank_EPr", "Early Precision", "bar", "Statistical Performance", list(width = 1, draw_outline = TRUE, palette="purples"),)
+    column_info <- bind_rows(general_column_infos, ie_column_infos, ht_column_infos, hub_column_infos, spacer, epr_column_info)
+  }
+  
+  figure <- funky_heatmap(
+    data = summary_plot,
+    column_info = column_info,
+    column_groups = column_groups,
+    row_info = row_info,
+    palettes = palettes,
+    legends = legends,
+    row_groups = row_groups,
+    position_args = position_arguments(col_annot_offset = 2.5),
+    scale_column = FALSE
+  )
+  print(figure)
+  savepdf(figure, name, w=15, h=10)
+}
+
+## Figure 5 (undirected)
+ie_metrics = c("Global Efficiency", "Local Efficiency", "Avg Shortest Path Length")
+ht_metrics = c("Assortativity", "Clustering Coefficient", "Centralization")
+hub_metrics = c("Betweenness", "Centrality", "Radiality", "PageRank")
+summary_plot(hub_metrics, ht_metrics, ie_metrics, directed=FALSE, name="figure5")
+
+## Figure S7 (directed)
+topology_metrics = c("Assortativity", "Clustering Coefficient", "In Centralization")
+hub_metrics = c("Betweenness", "Out Centrality", "PageRank")
+summary_plot(hub_metrics, topology_metrics, directed=TRUE, name="figureS7")
+```
+
+
+## Figure S1
+
+```{r fig.height=10, fig.width=15, message=FALSE, warning=FALSE}
+plot_performance_heatmap <- function(networks, metric){
+  performance_data <- load_performance_data(metric, networks, directed=FALSE)
+  perf1 <- plot_metric(metric, performance_data, plot="heatmap")
+}
+
+syn_auprc <- plot_performance_heatmap(networks="synthetic", "AUPRC")
+syn_auroc <- plot_performance_heatmap(networks="synthetic", "AUROC")
+exp_epr <- plot_performance_heatmap(networks="experimental", "EPr")
+row1 <- plot_grid(syn_auprc, syn_auroc, exp_epr, ncol = 3)
+
+figure_corrplot <- function(networks){
+  if(networks=="synthetic"){
+    performance_metrics = c("AUPRC", "AUROC", "EPr")
+  } else if (networks=="experimental"){
+    performance_metrics = c("EPr")
+  }
+  topology_metrics = c("Global Efficiency", "Local Efficiency", "Avg Shortest Path Length", 
+            "Assortativity", "Clustering Coefficient", "Centralization")
+  hub_metrics = c("Betweenness", "Centrality", "Radiality", "PageRank") 
+  n_metrics = length(c(performance_metrics, topology_metrics, hub_metrics))
+
+  performance_dfs <- lapply(performance_metrics, load_performance_data, networks=networks, directed=FALSE)
+  hub_data <- STREAMLINE_results(networks=networks, type="jaccard_ratio", directed=FALSE,  add_dataset = TRUE)[,c("Algorithm", "Network", "Dataset", hub_metrics)]
+  topology_data <- STREAMLINE_results(networks=networks, type="mse", directed=FALSE, add_dataset = TRUE)[,c("Algorithm", "Network", "Dataset", topology_metrics)]
+  topology_data[topology_metrics] <- -abs(topology_data[topology_metrics]) #negative absolute MSE (the higher the better)
+  dfs = lapply(c(list(topology_data, hub_data), performance_dfs), function(data) {
+    data$key <- paste(data$Dataset, data$Algorithm, data$Network, sep="_")
+    return(data)})
+  merged_dfs = Reduce(function(...) merge(..., by=c("key", "Algorithm", "Network", "Dataset")), dfs)
+  merged_dfs <- merged_dfs[c(hub_metrics, topology_metrics, performance_metrics)]
+  
+  merged_dfs = merged_dfs[complete.cases(merged_dfs),]
+  for (metric in performance_metrics){colnames(merged_dfs)[colnames(merged_dfs) == metric] <- paste0("Edge Detection (", metric, ")")}
+  
+  testRes = cor.mtest(merged_dfs, conf.level = 0.95, method = 'spearman')
+  plotcorr <- function() {
+    corrplot(cor(merged_dfs, method='spearman'), method = 'circle', type="upper", p.mat=testRes$p, sig.level = 0.01, tl.col="black", 
+             insig='pch', diag=FALSE, pch.cex=0.8, cl.pos="n", mar = c(0, 0, 0, 10)) |>
+      corrRect(index = c(1, 4), lty="dotted")|>
+      corrRect(index = c(1, 7), lty="dotted")|>
+      corrRect(index = c(1, 10), lty="dotted")|>
+      corrRect(index = c(1, n_metrics))|>
+      corrRect(index = c(5, n_metrics))|>
+      corrRect(index = c(8, n_metrics))|>
+      corrRect(index = c(11, n_metrics))
+    
+    corners = par("usr")
+    h = corners[4]-corners[3]
+    par(xpd = TRUE)
+    text(x = corners[2]+.5, y = corners[2] - 2.2, "Hub\nIdentification", srt = 270)
+    text(x = corners[2]+.5, y =  corners[2] - 6, "Information\nExchange", srt = 270)
+    text(x = corners[2]+.5, y = corners[2]- 9, "Hub\nTopology", srt = 270)
+    scalebluered <- rev(colorRampPalette(brewer.pal(8, "RdBu"))(8))
+    colorlegend(xlim=c(corners[2]+3,corners[2]+5), ylim=c(corners[2],corners[2]-h*0.6), scalebluered, c(seq(1,-1,-.25)), align="l", addlabels=TRUE, vertical=TRUE)
+  }
+  
+  svg(file = paste0(in_dir, "corrplot_", networks,".svg"), width = 7, height = 5)
+  grid.echo(plotcorr)
+  corr_plot <- grid.grab()
+  dev.off()
+  return(corr_plot)
+}
+
+corr_syn = figure_corrplot(networks="synthetic")
+corr_exp = figure_corrplot(networks="experimental")
+row2 <- plot_grid(corr_syn, corr_exp, ncol = 2, labels=c("B", "C"))
+
+figureS1 <- plot_grid(row1, NULL, row2, rel_heights = c(2.5, .2, 3), nrow=3, labels=c("A", "", ""))
+figureS1
+savepdf(figureS1, "figureS1", w=15, h=10)
+```
+
+## Figure S2
+
+```{r fig.height=12, fig.width=10, message=FALSE, warning=FALSE}
+metrics = c("Global Efficiency", "Local Efficiency", "Avg Shortest Path Length", "Assortativity", "Clustering Coefficient", "Centralization") 
+
+row1_2 <- metric_row(metrics, plot="violin", networks="synthetic", type="raw", directed=FALSE, ncol=3)
+row3_4 <- metric_row(metrics, plot="sina", networks="experimental", type="raw", directed=FALSE, ncol=3)
+
+figureS2 <- plot_grid(syn_network_legend, row1_2, NULL, row3_4, exp_network_legend, rel_heights = c(.5, 3, .2, 3, .5), nrow=5, labels=c("A", "", "B", "", ""))
+figureS2
+savepdf(figureS2, "figureS2", w=10, h=12)
+```
+
+## Figure S3
+
+```{r fig.height=6, fig.width=10, message=FALSE, warning=FALSE}
+gsd_gt <- image_ggplot(image_read(paste0(in_dir,"gsd_groundtruth.svg")))
+gsd_grnboost2 <- image_ggplot(image_read(paste0(in_dir,"gsd_GRNBOOST2.svg")))
+gsd_sincerities <- image_ggplot(image_read(paste0(in_dir, "gsd_SINCERITIES.svg")))
+gsd_pidc <- image_ggplot(image_read(paste0(in_dir, "gsd_PIDC.svg")))
+gsd_ppcor <- image_ggplot(image_read(paste0(in_dir, "gsd_PPCOR.svg")))
+  
+directed_algos <- plot_grid(gsd_grnboost2, NULL, gsd_sincerities, rel_widths=c(1,-.15,1), ncol=3, align='vh')
+undirected_algos <- plot_grid(gsd_pidc, NULL, gsd_ppcor, rel_widths=c(1,-.15,1), ncol=3, align='vh')
+predictions <- plot_grid(directed_algos, NULL,undirected_algos,rel_heights=c(1,-.3,1),nrow=3)
+figureS3  <- plot_grid(gsd_gt, predictions, ncol=2, rel_widths=c(1, 2))
+figureS3
+savepdf(figureS3, "figureS3", w=10, h=6)
+```
+
+## Figure S4
+
+```{r fig.height=10, fig.width=10, message=FALSE, warning=FALSE}
+metrics = c("Assortativity", "Clustering Coefficient", "In Centralization") 
+
+row1 <- metric_row(metrics, plot="violin", networks="synthetic", type="raw", directed=TRUE, x="Network", algos="ground truth")
+row2 <- metric_row(metrics, plot="sina", networks="experimental", type="raw", directed=TRUE, x="Network", algos="ground truth")
+row3 <- metric_row(metrics, plot="bar", networks="synthetic", type="mse", directed=TRUE, ylab="MSE")
+row4 <- metric_row(metrics, plot="bar", networks="experimental", type="mse", directed=TRUE, ylab="MSE")
+
+figureS4 <- plot_grid(row1, row2, row3, row4, dir_algo_legend, nrow=5, rel_heights = c(3, 3, 3, 3, .5), labels=c("A", "B", "C", "D", ""))
+figureS4 
+savepdf(figureS4, "figureS4", w=10, h=10)
+```
+  
+## Figure S5
+
+```{r fig.height=10, fig.width=10, message=FALSE, warning=FALSE}
+metrics = c("Betweenness", "Out Centrality", "PageRank")
+
+row1 <- metric_row(metrics, plot="ji_ratio", networks="synthetic", type="jaccard_ratio", directed=TRUE)
+row2 <- metric_row(metrics, plot="ji_ratio", networks="experimental", type="jaccard_ratio", directed=TRUE)
+row3 <- metric_row(metrics, plot="ji", networks="synthetic", type="jaccard", directed=TRUE, ylab="Jaccard coefficient")
+row4 <- metric_row(metrics, plot="ji", networks="experimental", type="jaccard", directed=TRUE, ylab="Jaccard coefficient")
+
+figureS5 <- plot_grid(dir_algo_legend, row1, row2, row3, row4, nrow=5, rel_heights = c(.5, 3, 3,3,3,.5), labels=c("", "A","B", "C","D"))
+figureS5
+savepdf(figureS5, "figureS5", w=10, h=10)
+```
+
+## Figure S6
+
+```{r fig.height=6, fig.width=11, message=FALSE, warning=FALSE}
+metrics = c("Betweenness", "Centrality", "Radiality", "PageRank")
+
+row1 <- metric_row(metrics, plot="ji", networks="synthetic", type="jaccard", directed=FALSE, ylab="Jaccard coefficient")
+row2 <- metric_row(metrics, plot="ji", networks="experimental", type="jaccard", directed=FALSE, ylab="Jaccard coefficient")
+
+figureS6 <- plot_grid(NULL, row1, NULL, row2, undir_algo_legend, rel_heights = c(.5, 3, .5, 3, .5), nrow=5, labels=c("A", "", "B", "", ""))
+figureS6
+savepdf(figureS6, "figureS6", w=11, h=6)
+```
+
+## Additional Figure for correlation on node-level of graph-level properties
+
+```{r fig.height=6, fig.width=10, message=FALSE, warning=FALSE}
+metrics = c("Local Efficiency", "Clustering Coefficient", "Node Degrees")
+
+row1 <- metric_row(metrics, plot="bar", networks="synthetic", type="correlation", directed=FALSE)
+row2 <- metric_row(metrics, plot="bar", networks="experimental", type="correlation", directed=FALSE)
+
+figure <- plot_grid(undir_algo_legend, row1, row2, nrow=3, rel_heights = c(.5, 3, 3), labels=c("", "A", "B"))
+figure
+#savepdf(figure, "figureCorr", w=10, h=6)
+```
+
