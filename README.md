@@ -8,9 +8,9 @@ STREAMLINE is a refined benchmarking strategy for GRN Inference Algorithms that 
 Before starting with STREAMLINE please make sure to have a stable installation of [BEELINE](https://github.com/Murali-group/Beeline) available.
 
 ### Data download
-All of the synthetic data, as well as most of the experimental data can be downloaded [here](https://doi.org/10.5281/zenodo.10710445).
+All of the synthetic and experimental data used in the paper can be downloaded [here](https://doi.org/10.5281/zenodo.10710444).
 After extracting the compressed folders (`/input` and `/output`), they need to be placed in the `/STREAMLINE` directory.
-The experimental folders contain a README file each with instructions on the download of the expression and pseudotime files for the experimental datasets from [here](https://doi.org/10.5281/zenodo.5907528) and the unzipping required for the predicted experimental networks.
+The experimental folders contain a `README.txt` file each with instructions on the unzipping of the expression and pseudo time files for the experimental datasets borrowed from [here](https://doi.org/10.5281/zenodo.5907528) and the unzipping required for the predicted experimental networks by all algorithms.
 
 ## Adding own data (optional)
 If you want to add your own experimental data, the expression files and ground truth networks need to be copied to the `/input` directory.
