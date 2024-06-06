@@ -1,6 +1,6 @@
 # STREAMLINE: Structural and Topological Performance Analysis of Algorithms for the Inference of Gene Regulatory Networks from Single-Cell Transcriptomic Data
 
-STREAMLINE is a refined benchmarking strategy for GRN Inference Algorithms that focuses on the preservation of topological graph properties as well as the identification of hubs. This repository contains all the scripts that are necessary to perform the analysis and reproduce the figures from the paper. The preprint that contains our findings can be found [here](https://www.biorxiv.org/content/10.1101/2022.10.31.514493v1).
+STREAMLINE is a refined benchmarking strategy for GRN Inference Algorithms that focuses on the preservation of topological graph properties as well as the identification of hubs. This repository contains all the scripts that are necessary to perform the analysis and reproduce the figures from the paper. The paper that contains our findings and that can be cited was published in Bioinformatics [here](https://doi.org/10.1093/bioinformatics/btae267).
 
 ![plot](./Figures/output/schematic.png)
 
